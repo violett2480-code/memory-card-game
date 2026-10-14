@@ -219,35 +219,31 @@
     let audioCtx = null;
     let masterGain = null;
     let voices = [];
-    let cheerIndex = 0;
     let speakTimer = 0;
     const liveSources = [];
+    const heldUtterances = [];
+
+    function isIOS() {
+      return /iPad|iPhone|iPod/.test(navigator.userAgent)
+        || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    }
+
+    function speechSupported() {
+      return typeof window.speechSynthesis !== "undefined"
+        && typeof window.SpeechSynthesisUtterance !== "undefined";
+    }
 
     function refreshVoices() {
-      if (!window.speechSynthesis) {
+      if (!speechSupported()) {
         return;
       }
       voices = speechSynthesis.getVoices();
     }
 
-    function voiceFor(lang) {
-      const target = lang.toLowerCase();
-      const language = target.slice(0, 2);
+    function koreanVoice() {
       const normalized = (voice) => voice.lang.toLowerCase().replace("_", "-");
-      const sameLanguage = voices.filter((voice) => normalized(voice).startsWith(language));
-      const exact = sameLanguage.filter((voice) => normalized(voice).startsWith(target));
-      const pool = exact.length ? exact : sameLanguage;
-      if (language === "en") {
-        if (pool.length) {
-          return pool.find((voice) => /zira|samantha|aria|jenny|google us english/i.test(voice.name)) || pool[0];
-        }
-        const japanese = voices.filter((voice) => normalized(voice).startsWith("ja"));
-        return japanese.find((voice) => /haruka|sayaka|ayumi/i.test(voice.name)) || japanese[0] || null;
-      }
-      if (!pool.length) {
-        return null;
-      }
-      return pool.find((voice) => /heami|sunhi|yuna|injoon|natural/i.test(voice.name)) || pool[0];
+      const korean = voices.filter((voice) => normalized(voice).startsWith("ko"));
+      return korean.find((voice) => normalized(voice).startsWith("ko-kr")) || korean[0] || null;
     }
 
     function ensureAudio() {
@@ -258,18 +254,58 @@
       if (!audioCtx) {
         audioCtx = new AudioCtx();
         masterGain = audioCtx.createGain();
+        masterGain.gain.value = 1;
         masterGain.connect(audioCtx.destination);
       }
-      if (audioCtx.state === "suspended") {
-        audioCtx.resume();
-      }
-      if (window.speechSynthesis) {
-        refreshVoices();
-        if (speechSynthesis.paused) {
-          speechSynthesis.resume();
+      return audioCtx;
+    }
+
+    function unlockAudio() {
+      const ctx = ensureAudio();
+      if (ctx && ctx.state === "suspended") {
+        const pending = ctx.resume();
+        if (pending && typeof pending.catch === "function") {
+          pending.catch(() => {});
         }
       }
-      return audioCtx;
+      if (ctx) {
+        const buffer = ctx.createBuffer(1, 1, ctx.sampleRate);
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(masterGain);
+        try {
+          source.start(ctx.currentTime);
+        } catch (error) {
+          source.disconnect();
+        }
+      }
+      if (speechSupported()) {
+        refreshVoices();
+        speechSynthesis.resume();
+      }
+    }
+
+    function whenRunning(task) {
+      const ctx = ensureAudio();
+      if (!ctx || !soundOn) {
+        return;
+      }
+      const run = () => {
+        if (!soundOn) {
+          return;
+        }
+        task(ctx);
+      };
+      if (ctx.state === "running") {
+        run();
+        return;
+      }
+      const pending = ctx.resume();
+      if (pending && typeof pending.then === "function") {
+        pending.then(run).catch(() => {});
+        return;
+      }
+      run();
     }
 
     function remember(source) {
@@ -292,7 +328,8 @@
         }
       });
       liveSources.length = 0;
-      if (window.speechSynthesis) {
+      heldUtterances.length = 0;
+      if (speechSupported()) {
         speechSynthesis.cancel();
       }
     }
@@ -309,84 +346,112 @@
         stopAudio();
         return;
       }
-      ensureAudio();
+      unlockAudio();
     }
 
-    function makeUtterance(line) {
-      const utterance = new SpeechSynthesisUtterance(line.text);
-      utterance.lang = line.lang;
-      utterance.pitch = line.pitch;
-      utterance.rate = line.rate;
-      utterance.volume = 1;
-      const voice = voiceFor(line.lang);
-      if (voice) {
-        utterance.voice = voice;
+    function releaseUtterance(utterance) {
+      const index = heldUtterances.indexOf(utterance);
+      if (index >= 0) {
+        heldUtterances.splice(index, 1);
       }
-      return utterance;
     }
 
     function queueSpeech(lines) {
-      if (!soundOn || !window.speechSynthesis) {
-        return;
+      if (!soundOn || !speechSupported()) {
+        return false;
       }
-      lines.forEach((line) => speechSynthesis.speak(makeUtterance(line)));
-      if (speechSynthesis.paused) {
-        speechSynthesis.resume();
-      }
+      const voice = koreanVoice();
+      lines.forEach((line, index) => {
+        const utterance = new SpeechSynthesisUtterance(line.text);
+        utterance.lang = "ko-KR";
+        utterance.pitch = line.pitch;
+        utterance.rate = line.rate;
+        utterance.volume = 1;
+        if (voice) {
+          utterance.voice = voice;
+        }
+        heldUtterances.push(utterance);
+        utterance.onend = () => releaseUtterance(utterance);
+        utterance.onerror = (event) => {
+          releaseUtterance(utterance);
+          if (!event || event.error === "canceled" || event.error === "interrupted" || index > 0) {
+            return;
+          }
+          if (line.fallback) {
+            line.fallback();
+          }
+        };
+        speechSynthesis.speak(utterance);
+      });
+      speechSynthesis.resume();
+      return true;
     }
 
-    function speakLines(lines) {
-      if (!soundOn || !window.speechSynthesis) {
-        return;
+    function speakKorean(lines) {
+      if (!soundOn) {
+        return false;
       }
-      ensureAudio();
+      unlockAudio();
+      if (!speechSupported()) {
+        return false;
+      }
       refreshVoices();
       window.clearTimeout(speakTimer);
       const busy = speechSynthesis.speaking || speechSynthesis.pending;
+      if (busy && !isIOS()) {
+        speechSynthesis.cancel();
+        speakTimer = window.setTimeout(() => queueSpeech(lines), 50);
+        return true;
+      }
       if (busy) {
         speechSynthesis.cancel();
-        speakTimer = window.setTimeout(() => queueSpeech(lines), 60);
-        return;
       }
-      queueSpeech(lines);
+      try {
+        return queueSpeech(lines);
+      } catch (error) {
+        return false;
+      }
     }
 
-
-    function nextCheer() {
-  return {
-    text: "잘했어요!",
-    lang: "ko-KR",
-    pitch: 1,
-    rate: 0.95
-  };
-}
+    function playTone(ctx, frequency, time, duration, volume) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(frequency, time);
+      gain.gain.setValueAtTime(0.0001, time);
+      gain.gain.exponentialRampToValueAtTime(volume, time + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, time + duration);
+      osc.connect(gain);
+      gain.connect(masterGain);
+      osc.start(time);
+      osc.stop(time + duration + 0.02);
+      remember(osc);
+    }
 
     function playMiss() {
       if (!soundOn) {
         return;
       }
-      const ctx = ensureAudio();
-      if (!ctx) {
-        return;
-      }
-      const now = ctx.currentTime;
-      const osc = ctx.createOscillator();
-      const filter = ctx.createBiquadFilter();
-      const gain = ctx.createGain();
-      osc.type = "sine";
-      osc.frequency.setValueAtTime(620, now);
-      osc.frequency.exponentialRampToValueAtTime(340, now + 0.18);
-      filter.type = "lowpass";
-      filter.frequency.setValueAtTime(1400, now);
-      gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.exponentialRampToValueAtTime(0.06, now + 0.03);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
-      osc.connect(filter);
-      filter.connect(gain);
-      gain.connect(masterGain);
-      osc.start(now);
-      osc.stop(now + 0.24);
-      remember(osc);
+      whenRunning((ctx) => {
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        const filter = ctx.createBiquadFilter();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(620, now);
+        osc.frequency.exponentialRampToValueAtTime(340, now + 0.18);
+        filter.type = "lowpass";
+        filter.frequency.setValueAtTime(1400, now);
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.exponentialRampToValueAtTime(0.08, now + 0.03);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
+        osc.connect(filter);
+        filter.connect(gain);
+        gain.connect(masterGain);
+        osc.start(now);
+        osc.stop(now + 0.24);
+        remember(osc);
+      });
     }
 
     function playClap(ctx, time, volume) {
@@ -418,26 +483,61 @@
       if (!soundOn) {
         return;
       }
-      const ctx = ensureAudio();
-      if (!ctx) {
-        return;
-      }
-      const start = ctx.currentTime + delay;
-      [0, 0.11, 0.22, 0.34, 0.46, 0.57, 0.71, 0.84, 0.98, 1.12, 1.28, 1.45].forEach((offset, index) => {
-        playClap(ctx, start + offset, 0.14 + (index % 4) * 0.025);
+      whenRunning((ctx) => {
+        const start = ctx.currentTime + delay;
+        [0, 0.11, 0.22, 0.34, 0.46, 0.57, 0.71, 0.84, 0.98, 1.12, 1.28, 1.45].forEach((offset, index) => {
+          playClap(ctx, start + offset, 0.14 + (index % 4) * 0.025);
+        });
       });
     }
 
-    function playGood() {
-      speakLines([nextCheer()]);
+    function playCheerTone() {
+      whenRunning((ctx) => {
+        const now = ctx.currentTime;
+        playTone(ctx, 523.25, now, 0.16, 0.1);
+        playTone(ctx, 659.25, now + 0.12, 0.2, 0.1);
+      });
+    }
+
+    function playWinTone() {
+      whenRunning((ctx) => {
+        const now = ctx.currentTime;
+        [523.25, 659.25, 783.99, 1046.5].forEach((frequency, index) => {
+          playTone(ctx, frequency, now + index * 0.12, 0.2, 0.1);
+        });
+      });
+    }
+
+    function playMatch() {
+      const spoken = speakKorean([{
+        text: "잘했어요!",
+        pitch: 1.05,
+        rate: 0.95,
+        fallback: playCheerTone
+      }]);
+      if (!spoken) {
+        playCheerTone();
+      }
     }
 
     function playWin() {
-      speakLines([
-        nextCheer(),
-        { text: "축하합니다! 성공했어요!", lang: "ko-KR", pitch: 1, rate: 0.95 }
+      const spoken = speakKorean([
+        {
+          text: "잘했어요!",
+          pitch: 1.05,
+          rate: 0.95,
+          fallback: playWinTone
+        },
+        {
+          text: "축하합니다! 성공했어요!",
+          pitch: 1.05,
+          rate: 0.95
+        }
       ]);
-      playApplause(0.8);
+      playApplause(spoken ? 0.7 : 0.15);
+      if (!spoken) {
+        playWinTone();
+      }
     }
 
     function shuffle(list) {
@@ -458,7 +558,6 @@
       opened = [];
       moves = 0;
       pairs = 0;
-      cheerIndex = 0;
       updateMoves();
       messageEl.textContent = "";
       board.innerHTML = "";
@@ -477,6 +576,7 @@
     }
 
     function flipCard(card) {
+      unlockAudio();
       if (lock || card.classList.contains("flipped") || card.classList.contains("matched")) {
         return;
       }
@@ -504,7 +604,7 @@
           messageEl.textContent = "성공! " + moves + "번 만에 모두 맞췄어요.";
           playWin();
         } else {
-          playGood();
+          playMatch();
         }
         return;
       }
@@ -520,10 +620,12 @@
       }, 1000);
     }
 
-    if (window.speechSynthesis) {
+    if (speechSupported()) {
       refreshVoices();
       speechSynthesis.addEventListener("voiceschanged", refreshVoices);
     }
+    window.addEventListener("pointerdown", unlockAudio, { passive: true });
+    window.addEventListener("touchstart", unlockAudio, { passive: true });
     soundBtn.addEventListener("click", toggleSound);
     restartBtn.addEventListener("click", startGame);
     startGame();
