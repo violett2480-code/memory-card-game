@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>기억력 카드 짝 맞추기</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      min-height: 100vh;
+      font-family: "Segoe UI", "Apple SD Gothic Neo", sans-serif;
+      color: #3d2c4a;
+      background:
+        radial-gradient(circle at top, #fff7fb 0%, #f3e8ff 45%, #e7f6ff 100%);
+      display: flex;
+      justify-content: center;
+      padding: 24px 16px 40px;
+    }
+
+    .game {
+      width: min(520px, 100%);
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 18px;
+    }
+
+    h1 {
+      font-size: clamp(1.5rem, 5vw, 2rem);
+      margin-bottom: 6px;
+    }
+
+    .help {
+      color: #6b5b7a;
+      font-size: 0.95rem;
+    }
+
+    .top {
+      display: flex;
+      justify-content: flex-end;
+      margin-bottom: 10px;
+    }
+
+    button.sound {
+      min-height: 44px;
+      border: 0;
+      border-radius: 999px;
+      background: #fff;
+      color: #3d2c4a;
+      font: inherit;
+      font-weight: 700;
+      padding: 10px 16px;
+      cursor: pointer;
+      box-shadow: 0 6px 16px rgba(90, 60, 120, 0.08);
+    }
+
+    button.sound[aria-pressed="false"] {
+      color: #6b5b7a;
+      background: #efe7f8;
+    }
+
+    button.sound:active {
+      transform: translateY(1px);
+    }
+
+    .bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 16px 0 18px;
+    }
+
+    .moves {
+      background: #fff;
+      border-radius: 999px;
+      padding: 10px 16px;
+      font-weight: 700;
+      box-shadow: 0 6px 16px rgba(90, 60, 120, 0.08);
+    }
+
+    button.restart {
+      border: 0;
+      border-radius: 999px;
+      background: #7c5cbf;
+      color: #fff;
+      font: inherit;
+      font-weight: 700;
+      padding: 10px 16px;
+      cursor: pointer;
+    }
+
+    button.restart:active {
+      transform: translateY(1px);
+    }
+
+    button {
+      touch-action: manipulation;
+    }
+
+    .board {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .card {
+      position: relative;
+      aspect-ratio: 3 / 4;
+      border: 0;
+      border-radius: 18px;
+      padding: 0;
+      background: linear-gradient(160deg, #8d6ad8, #5b8def);
+      color: #fff;
+      font-size: clamp(1.4rem, 6vw, 2rem);
+      font-weight: 800;
+      box-shadow: 0 8px 18px rgba(80, 50, 110, 0.12);
+      cursor: pointer;
+      transition: background 0.28s ease, transform 0.28s ease;
+    }
+
+    .card:disabled {
+      cursor: default;
+    }
+
+    .card.flipped,
+    .card.matched {
+      background: #fffdf8;
+      font-size: clamp(2rem, 8vw, 2.8rem);
+      font-weight: 400;
+    }
+
+    .card.matched {
+      background: #e9fff1;
+      box-shadow: inset 0 0 0 3px #7dcea0, 0 8px 18px rgba(80, 50, 110, 0.12);
+    }
+
+    .inner {
+      position: absolute;
+      inset: 0;
+    }
+
+    .face {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      transition: opacity 0.28s ease, transform 0.28s ease;
+    }
+
+    .back {
+      opacity: 0;
+      transform: scale(0.86);
+    }
+
+    .card.flipped .front,
+    .card.matched .front {
+      opacity: 0;
+      transform: scale(0.86);
+    }
+
+    .card.flipped .back,
+    .card.matched .back {
+      opacity: 1;
+      transform: none;
+    }
+
+    .message {
+      min-height: 1.6em;
+      margin-top: 16px;
+      text-align: center;
+      font-weight: 700;
+      color: #2f7d4a;
+    }
+
+    @media (min-width: 640px) {
+      .board {
+        grid-template-columns: repeat(4, 1fr);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="game">
+    <div class="top">
+      <button class="sound" id="sound" type="button" aria-pressed="true">소리 끄기</button>
+    </div>
+    <header>
+      <h1>기억력 카드</h1>
+      <p class="help">같은 동물 두 장을 찾아 보세요.</p>
+    </header>
+    <div class="bar">
+      <p class="moves">시도 <span id="moves">0</span>번</p>
+      <button class="restart" id="restart" type="button">다시 시작</button>
+    </div>
+    <div class="board" id="board"></div>
+    <p class="message" id="message" aria-live="polite"></p>
+  </main>
+
+  <script>
+    const animals = ["🐶", "🐱", "🐰", "🦊", "🐻", "🐼"];
+    const board = document.getElementById("board");
+    const movesEl = document.getElementById("moves");
+    const messageEl = document.getElementById("message");
+    const restartBtn = document.getElementById("restart");
+    const soundBtn = document.getElementById("sound");
+
+    let lock = false;
+    let opened = [];
+    let moves = 0;
+    let pairs = 0;
+    let soundOn = true;
+    let audioCtx = null;
+    let masterGain = null;
+    let voices = [];
+    let cheerIndex = 0;
+    let speakTimer = 0;
+    const liveSources = [];
+
+    function refreshVoices() {
+      if (!window.speechSynthesis) {
+        return;
+      }
+      voices = speechSynthesis.getVoices();
+    }
+
+    function voiceFor(lang) {
+      const target = lang.toLowerCase();
+      const language = target.slice(0, 2);
+      const normalized = (voice) => voice.lang.toLowerCase().replace("_", "-");
+      const sameLanguage = voices.filter((voice) => normalized(voice).startsWith(language));
+      const exact = sameLanguage.filter((voice) => normalized(voice).startsWith(target));
+      const pool = exact.length ? exact : sameLanguage;
+      if (language === "en") {
+        if (pool.length) {
+          return pool.find((voice) => /zira|samantha|aria|jenny|google us english/i.test(voice.name)) || pool[0];
+        }
+        const japanese = voices.filter((voice) => normalized(voice).startsWith("ja"));
+        return japanese.find((voice) => /haruka|sayaka|ayumi/i.test(voice.name)) || japanese[0] || null;
+      }
+      if (!pool.length) {
+        return null;
+      }
+      return pool.find((voice) => /heami|sunhi|yuna|injoon|natural/i.test(voice.name)) || pool[0];
+    }
+
+    function ensureAudio() {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) {
+        return null;
+      }
+      if (!audioCtx) {
+        audioCtx = new AudioCtx();
+        masterGain = audioCtx.createGain();
+        masterGain.connect(audioCtx.destination);
+      }
+      if (audioCtx.state === "suspended") {
+        audioCtx.resume();
+      }
+      if (window.speechSynthesis) {
+        refreshVoices();
+        if (speechSynthesis.paused) {
+          speechSynthesis.resume();
+        }
+      }
+      return audioCtx;
+    }
+
+    function remember(source) {
+      liveSources.push(source);
+      source.onended = () => {
+        const index = liveSources.indexOf(source);
+        if (index >= 0) {
+          liveSources.splice(index, 1);
+        }
+      };
+    }
+
+    function stopAudio() {
+      window.clearTimeout(speakTimer);
+      liveSources.forEach((source) => {
+        try {
+          source.stop();
+        } catch (error) {
+          return;
+        }
+      });
+      liveSources.length = 0;
+      if (window.speechSynthesis) {
+        speechSynthesis.cancel();
+      }
+    }
+
+    function updateSoundButton() {
+      soundBtn.setAttribute("aria-pressed", soundOn ? "true" : "false");
+      soundBtn.textContent = soundOn ? "소리 끄기" : "소리 켜기";
+    }
+
+    function toggleSound() {
+      soundOn = !soundOn;
+      updateSoundButton();
+      if (!soundOn) {
+        stopAudio();
+        return;
+      }
+      ensureAudio();
+    }
+
+    function makeUtterance(line) {
+      const utterance = new SpeechSynthesisUtterance(line.text);
+      utterance.lang = line.lang;
+      utterance.pitch = line.pitch;
+      utterance.rate = line.rate;
+      utterance.volume = 1;
+      const voice = voiceFor(line.lang);
+      if (voice) {
+        utterance.voice = voice;
+      }
+      return utterance;
+    }
+
+    function queueSpeech(lines) {
+      if (!soundOn || !window.speechSynthesis) {
+        return;
+      }
+      lines.forEach((line) => speechSynthesis.speak(makeUtterance(line)));
+      if (speechSynthesis.paused) {
+        speechSynthesis.resume();
+      }
+    }
+
+    function speakLines(lines) {
+      if (!soundOn || !window.speechSynthesis) {
+        return;
+      }
+      ensureAudio();
+      refreshVoices();
+      window.clearTimeout(speakTimer);
+      const busy = speechSynthesis.speaking || speechSynthesis.pending;
+      if (busy) {
+        speechSynthesis.cancel();
+        speakTimer = window.setTimeout(() => queueSpeech(lines), 60);
+        return;
+      }
+      queueSpeech(lines);
+    }
+
+
+    function nextCheer() {
+  return {
+    text: "잘했어요!",
+    lang: "ko-KR",
+    pitch: 1,
+    rate: 0.95
+  };
+}
+
+    function playMiss() {
+      if (!soundOn) {
+        return;
+      }
+      const ctx = ensureAudio();
+      if (!ctx) {
+        return;
+      }
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const filter = ctx.createBiquadFilter();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(620, now);
+      osc.frequency.exponentialRampToValueAtTime(340, now + 0.18);
+      filter.type = "lowpass";
+      filter.frequency.setValueAtTime(1400, now);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.06, now + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(masterGain);
+      osc.start(now);
+      osc.stop(now + 0.24);
+      remember(osc);
+    }
+
+    function playClap(ctx, time, volume) {
+      const duration = 0.08;
+      const length = Math.max(1, Math.floor(ctx.sampleRate * duration));
+      const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < length; i += 1) {
+        data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 3);
+      }
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      const filter = ctx.createBiquadFilter();
+      filter.type = "bandpass";
+      filter.frequency.setValueAtTime(1400 + Math.random() * 800, time);
+      filter.Q.setValueAtTime(0.6, time);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(volume, time);
+      gain.gain.exponentialRampToValueAtTime(0.001, time + duration);
+      source.connect(filter);
+      filter.connect(gain);
+      gain.connect(masterGain);
+      source.start(time);
+      source.stop(time + duration + 0.02);
+      remember(source);
+    }
+
+    function playApplause(delay) {
+      if (!soundOn) {
+        return;
+      }
+      const ctx = ensureAudio();
+      if (!ctx) {
+        return;
+      }
+      const start = ctx.currentTime + delay;
+      [0, 0.11, 0.22, 0.34, 0.46, 0.57, 0.71, 0.84, 0.98, 1.12, 1.28, 1.45].forEach((offset, index) => {
+        playClap(ctx, start + offset, 0.14 + (index % 4) * 0.025);
+      });
+    }
+
+    function playGood() {
+      speakLines([nextCheer()]);
+    }
+
+    function playWin() {
+      speakLines([
+        nextCheer(),
+        { text: "축하합니다! 성공했어요!", lang: "ko-KR", pitch: 1, rate: 0.95 }
+      ]);
+      playApplause(0.8);
+    }
+
+    function shuffle(list) {
+      const cards = list.slice();
+      for (let i = cards.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [cards[i], cards[j]] = [cards[j], cards[i]];
+      }
+      return cards;
+    }
+
+    function updateMoves() {
+      movesEl.textContent = String(moves);
+    }
+
+    function startGame() {
+      lock = false;
+      opened = [];
+      moves = 0;
+      pairs = 0;
+      cheerIndex = 0;
+      updateMoves();
+      messageEl.textContent = "";
+      board.innerHTML = "";
+
+      shuffle(animals.concat(animals)).forEach((animal) => {
+        const card = document.createElement("button");
+        card.type = "button";
+        card.className = "card";
+        card.dataset.animal = animal;
+        card.setAttribute("aria-label", "뒤집힌 카드");
+        card.innerHTML = '<span class="inner"><span class="face front">?</span><span class="face back"></span></span>';
+        card.querySelector(".back").textContent = animal;
+        card.addEventListener("click", () => flipCard(card));
+        board.appendChild(card);
+      });
+    }
+
+    function flipCard(card) {
+      if (lock || card.classList.contains("flipped") || card.classList.contains("matched")) {
+        return;
+      }
+
+      card.classList.add("flipped");
+      card.setAttribute("aria-label", card.dataset.animal);
+      opened.push(card);
+
+      if (opened.length < 2) {
+        return;
+      }
+
+      moves += 1;
+      updateMoves();
+      const [first, second] = opened;
+      opened = [];
+
+      if (first.dataset.animal === second.dataset.animal) {
+        first.classList.add("matched");
+        second.classList.add("matched");
+        first.disabled = true;
+        second.disabled = true;
+        pairs += 1;
+        if (pairs === animals.length) {
+          messageEl.textContent = "성공! " + moves + "번 만에 모두 맞췄어요.";
+          playWin();
+        } else {
+          playGood();
+        }
+        return;
+      }
+
+      playMiss();
+      lock = true;
+      window.setTimeout(() => {
+        first.classList.remove("flipped");
+        second.classList.remove("flipped");
+        first.setAttribute("aria-label", "뒤집힌 카드");
+        second.setAttribute("aria-label", "뒤집힌 카드");
+        lock = false;
+      }, 1000);
+    }
+
+    if (window.speechSynthesis) {
+      refreshVoices();
+      speechSynthesis.addEventListener("voiceschanged", refreshVoices);
+    }
+    soundBtn.addEventListener("click", toggleSound);
+    restartBtn.addEventListener("click", startGame);
+    startGame();
+  </script>
+</body>
+</html>
